@@ -1,0 +1,321 @@
+#cloud-config
+
+# Zot Registry Bootstrap Script for Hetzner Cloud
+# Compatible with: Debian 12 (Bookworm), Debian 11 (Bullseye)
+# This script automatically configures a Hetzner VM to run zot as a systemd service
+
+# SSH Keys - Add your public SSH key(s) here
+# Replace with your actual SSH public key
+ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPUBLIC_KEY_HERE your-email@example.com
+
+# Update package database on first boot
+package_update: true
+package_upgrade: true
+
+# Install required packages
+packages:
+  - podman
+  - apache2-utils  # For htpasswd
+  - curl
+  - ca-certificates
+
+# Write configuration files
+write_files:
+  # Caddyfile - single source of truth for Caddy configuration
+  - path: /etc/caddy/Caddyfile
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Caddyfile for Zot Registry
+      # This configuration provides automatic HTTPS with Let's Encrypt
+
+      # HTTP-only configuration (for initial setup or if you don't have a domain)
+      # To enable HTTPS: replace ":80" with "your-domain.com" (see example below)
+      :80 {
+      	# Reverse proxy to zot container
+      	reverse_proxy localhost:5000 {
+      		# Preserve original headers
+      		header_up Host {host}
+      		header_up X-Real-IP {remote_host}
+      		header_up X-Forwarded-For {remote_host}
+      		header_up X-Forwarded-Proto {scheme}
+
+      		# Container registry specific settings
+      		# No request body size limit for large image uploads
+      		request_buffers unlimited
+
+      		# Longer timeouts for large image operations
+      		transport http {
+      			read_timeout 15m
+      			write_timeout 15m
+      			dial_timeout 30s
+      		}
+      	}
+
+      	# Enable access logging
+      	log {
+      		output file /var/log/caddy/access.log
+      		format console
+      	}
+      }
+
+      # Example with automatic HTTPS (uncomment and configure when you have a domain)
+      # your-registry.example.com {
+      # 	reverse_proxy localhost:5000 {
+      # 		header_up Host {host}
+      # 		header_up X-Real-IP {remote_host}
+      # 		header_up X-Forwarded-For {remote_host}
+      # 		header_up X-Forwarded-Proto {scheme}
+      #
+      # 		request_buffers unlimited
+      #
+      # 		transport http {
+      # 			read_timeout 15m
+      # 			write_timeout 15m
+      # 			dial_timeout 30s
+      # 		}
+      # 	}
+      #
+      # 	log {
+      # 		output file /var/log/caddy/access.log
+      # 		format console
+      # 	}
+      # }
+
+  # Zot configuration - single source of truth for zot registry config
+  - path: /etc/zot/config.json
+    owner: root:root
+    permissions: '0644'
+    content: |
+      {
+        "distSpecVersion": "1.1.0",
+        "storage": {
+          "rootDirectory": "/var/lib/zot",
+          "dedupe": false,
+          "gc": true,
+          "gcDelay": "1h",
+          "gcInterval": "24h",
+          "storageDriver": {
+            "name": "s3",
+            "region": "eu-central-1",
+            "bucket": "BUCKET_NAME_PLACEHOLDER",
+            "regionendpoint": "fsn1.your-objectstorage.com",
+            "secure": true,
+            "skipverify": false
+          }
+        },
+        "http": {
+          "address": "0.0.0.0",
+          "port": "5000",
+          "realm": "zot",
+          "auth": {
+            "htpasswd": {
+              "path": "/etc/zot/htpasswd"
+            }
+          },
+          "accessControl": {
+            "repositories": {
+              "**": {
+                "policies": [
+                  {
+                    "users": ["admin"],
+                    "actions": ["read", "create", "update", "delete"]
+                  }
+                ],
+                "defaultPolicy": ["read"]
+              }
+            }
+          }
+        },
+        "log": {
+          "level": "info",
+          "output": "/var/log/zot/zot.log",
+          "audit": "/var/log/zot/audit.log"
+        },
+        "extensions": {
+          "ui": {
+            "enable": true
+          },
+          "search": {
+            "enable": true
+          }
+        }
+      }
+
+# Create necessary directories
+runcmd:
+  # Download and install Caddy binary from official GitHub releases
+  - mkdir -p /usr/local/bin
+  - mkdir -p /etc/caddy
+  - mkdir -p /var/log/caddy
+  - mkdir -p /var/lib/caddy
+
+  # Download latest Caddy binary from GitHub API
+  - |
+    CADDY_VERSION=$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+    CADDY_VERSION_NUM=${CADDY_VERSION#v}
+    curl -L "https://github.com/caddyserver/caddy/releases/download/${CADDY_VERSION}/caddy_${CADDY_VERSION_NUM}_linux_amd64.tar.gz" -o /tmp/caddy.tar.gz
+
+  # Extract and install
+  - tar -xzf /tmp/caddy.tar.gz -C /tmp
+  - mv /tmp/caddy /usr/local/bin/caddy
+  - chmod +x /usr/local/bin/caddy
+  - rm /tmp/caddy.tar.gz
+
+  # Create caddy user and group
+  - groupadd --system caddy
+  - useradd --system --gid caddy --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
+
+  # Set ownership
+  - chown -R caddy:caddy /etc/caddy
+  - chown -R caddy:caddy /var/log/caddy
+  - chown -R caddy:caddy /var/lib/caddy
+
+  # Create zot directories (config.json deployed via write_files)
+  - mkdir -p /etc/zot
+  - mkdir -p /var/log/zot
+  - mkdir -p /var/lib/zot
+
+  # Create default htpasswd file (user: admin, password: changeme)
+  # IMPORTANT: Change this password immediately after deployment!
+  - htpasswd -Bbn admin changeme > /etc/zot/htpasswd
+
+  # Create credentials file from environment or metadata
+  # You should populate these via Hetzner Cloud metadata or secrets
+  - |
+    cat > /etc/zot/credentials.env << 'EOF'
+    AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE
+    AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE
+    EOF
+
+  # Set proper permissions
+  - chmod 600 /etc/zot/credentials.env
+  - chmod 644 /etc/zot/config.json
+  - chmod 644 /etc/zot/htpasswd
+
+  # Download systemd service file
+  - |
+    cat > /etc/systemd/system/zot.service << 'EOF'
+    [Unit]
+    Description=Zot OCI Registry
+    Documentation=https://zotregistry.dev
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=notify
+    NotifyAccess=all
+    Restart=always
+    RestartSec=10
+    TimeoutStartSec=0
+
+    # Environment variables for S3 credentials
+    EnvironmentFile=/etc/zot/credentials.env
+
+    # Enable podman auto-update
+    Environment="PODMAN_SYSTEMD_UNIT=%n"
+
+    # Pull the latest image (only if not present)
+    ExecStartPre=-/usr/bin/podman pull ghcr.io/project-zot/zot:latest
+
+    # Stop and remove any existing container
+    ExecStartPre=-/usr/bin/podman stop zot
+    ExecStartPre=-/usr/bin/podman rm zot
+
+    # Run the container with auto-update label
+    ExecStart=/usr/bin/podman run \
+      --name zot \
+      --sdnotify=conmon \
+      --label io.containers.autoupdate=registry \
+      --publish 5000:5000 \
+      --volume /etc/zot/config.json:/etc/zot/config.json:ro,Z \
+      --volume /etc/zot/htpasswd:/etc/zot/htpasswd:ro,Z \
+      --volume /var/lib/zot:/var/lib/zot:Z \
+      --volume /var/log/zot:/var/log/zot:Z \
+      --env AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+      --env AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+      ghcr.io/project-zot/zot:latest serve /etc/zot/config.json
+
+    # Stop the container
+    ExecStop=/usr/bin/podman stop -t 10 zot
+
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+
+  # Set proper permissions for Caddy directories
+  - chown -R caddy:caddy /etc/caddy
+  - chown -R caddy:caddy /var/log/caddy
+
+  # Create Caddy systemd service
+  - |
+    cat > /etc/systemd/system/caddy.service << 'EOF'
+    [Unit]
+    Description=Caddy Web Server
+    Documentation=https://caddyserver.com/docs/
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=notify
+    User=caddy
+    Group=caddy
+    ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+    ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+    TimeoutStopSec=5s
+    LimitNOFILE=1048576
+    PrivateTmp=true
+    ProtectSystem=full
+    AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+
+  # Pull zot image with podman
+  - podman pull ghcr.io/project-zot/zot:latest
+
+  # Enable and start zot service
+  - systemctl daemon-reload
+  - systemctl enable zot.service
+  - systemctl start zot.service
+
+  # Enable and configure podman auto-update timer
+  - systemctl enable podman-auto-update.timer
+  - systemctl start podman-auto-update.timer
+
+  # Start Caddy
+  - systemctl enable caddy
+  - systemctl restart caddy
+
+  # Configure firewall (if using ufw)
+  - ufw allow 22/tcp
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - echo "y" | ufw enable
+
+# Write final message
+final_message: |
+  Zot registry has been deployed successfully!
+
+  IMPORTANT NEXT STEPS:
+  1. Update /etc/zot/credentials.env with your Hetzner S3 credentials
+  2. Update /etc/zot/config.json with your bucket name and endpoint
+  3. Change the default admin password in /etc/zot/htpasswd
+  4. Restart the service: systemctl restart zot.service
+
+  For automatic HTTPS:
+  5. Edit /etc/caddy/Caddyfile and replace :80 with your-domain.com
+  6. Restart Caddy: systemctl restart caddy
+  7. Caddy will automatically obtain and manage SSL certificates!
+
+  Access your registry at: http://YOUR_SERVER_IP:80
+
+  Podman auto-update is enabled and runs daily at midnight.
+  Check auto-update timer: systemctl status podman-auto-update.timer
+  Manual update check: podman auto-update --dry-run
+
+  Check service status: systemctl status zot.service
+  View logs: journalctl -u zot.service -f
+  Caddy logs: journalctl -u caddy -f

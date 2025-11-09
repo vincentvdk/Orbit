@@ -1,0 +1,44 @@
+[Unit]
+Description=Zot OCI Registry
+Documentation=https://zotregistry.dev
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+Restart=always
+RestartSec=10
+TimeoutStartSec=0
+
+# Environment variables for S3 credentials
+EnvironmentFile=/etc/zot/credentials.env
+
+# Enable podman auto-update
+Environment="PODMAN_SYSTEMD_UNIT=%n"
+
+# Pull the latest image (only if not present)
+ExecStartPre=-/usr/bin/podman pull ghcr.io/project-zot/zot:latest
+
+# Stop and remove any existing container
+ExecStartPre=-/usr/bin/podman stop zot
+ExecStartPre=-/usr/bin/podman rm zot
+
+# Run the container with auto-update label
+ExecStart=/usr/bin/podman run \
+  --name zot \
+  --sdnotify=conmon \
+  --label io.containers.autoupdate=registry \
+  --publish 5000:5000 \
+  --volume /etc/zot/config.json:/etc/zot/config.json:ro,Z \
+  --volume /etc/zot/htpasswd:/etc/zot/htpasswd:ro,Z \
+  --volume /var/log/zot:/var/log/zot:Z \
+  --env AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+  --env AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+  ghcr.io/project-zot/zot:latest serve /etc/zot/config.json
+
+# Stop the container
+ExecStop=/usr/bin/podman stop -t 10 zot
+
+[Install]
+WantedBy=multi-user.target

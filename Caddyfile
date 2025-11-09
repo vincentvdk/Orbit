@@ -1,0 +1,55 @@
+# Caddyfile for Zot Registry
+# This configuration provides automatic HTTPS with Let's Encrypt
+
+# HTTP-only configuration (for initial setup or if you don't have a domain)
+# To enable HTTPS: replace ":80" with "your-domain.com" (see example below)
+:80 {
+	# Reverse proxy to zot container
+	reverse_proxy localhost:5000 {
+		# Preserve original headers
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+
+		# Container registry specific settings
+		# No request body size limit for large image uploads
+		request_buffers unlimited
+
+		# Longer timeouts for large image operations
+		transport http {
+			read_timeout 15m
+			write_timeout 15m
+			dial_timeout 30s
+		}
+	}
+
+	# Enable access logging
+	log {
+		output file /var/log/caddy/access.log
+		format console
+	}
+}
+
+# Example with automatic HTTPS (uncomment and configure when you have a domain)
+# your-registry.example.com {
+# 	reverse_proxy localhost:5000 {
+# 		header_up Host {host}
+# 		header_up X-Real-IP {remote_host}
+# 		header_up X-Forwarded-For {remote_host}
+# 		header_up X-Forwarded-Proto {scheme}
+#
+# 		request_buffers unlimited
+#
+# 		transport http {
+# 			read_timeout 15m
+# 			write_timeout 15m
+# 			dial_timeout 30s
+# 		}
+# 	}
+#
+# 	log {
+# 		output file /var/log/caddy/access.log
+# 		format console
+# 	}
+# }

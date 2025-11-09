@@ -1,0 +1,13 @@
+# Customized cloud-init files with credentials
+cloud-init-custom.yaml
+
+# Environment files with secrets
+*.env
+credentials.env
+
+# Backup files
+*.bak
+*~
+
+# Local testing
+test-config.json

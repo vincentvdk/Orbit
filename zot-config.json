@@ -1,0 +1,72 @@
+{
+  "distSpecVersion": "1.1.0",
+  "storage": {
+    "rootDirectory": "/var/lib/zot",
+    "dedupe": false,
+    "gc": true,
+    "gcDelay": "1h",
+    "gcInterval": "24h",
+    "storageDriver": {
+      "name": "s3",
+      "region": "eu-central-1",
+      "bucket": "${HETZNER_BUCKET_NAME}",
+      "regionendpoint": "${HETZNER_S3_REGION}.your-objectstorage.com",
+      "secure": true,
+      "skipverify": false
+    }
+  },
+  "http": {
+    "address": "0.0.0.0",
+    "port": "5000",
+    "realm": "zot",
+    "auth": {
+      "htpasswd": {
+        "path": "/etc/zot/htpasswd"
+      }
+    },
+    "accessControl": {
+      "repositories": {
+        "**": {
+          "policies": [
+            {
+              "users": ["admin"],
+              "actions": ["read", "create", "update", "delete"]
+            }
+          ],
+          "defaultPolicy": ["read"]
+        }
+      }
+    }
+  },
+  "log": {
+    "level": "info",
+    "output": "/var/log/zot/zot.log",
+    "audit": "/var/log/zot/audit.log"
+  },
+  "extensions": {
+    "ui": {
+      "enable": true
+    },
+    "search": {
+      "enable": true
+    },
+    "sync": {
+      "enable": true,
+      "credentialsFile": "/etc/zot/ghcr-credentials.json",
+      "registries": [
+        {
+          "urls": ["https://ghcr.io"],
+          "onDemand": true,
+          "tlsVerify": true,
+          "maxRetries": 3,
+          "retryDelay": "5m",
+          "content": [
+            {
+              "prefix": "**"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
