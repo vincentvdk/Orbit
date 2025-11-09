@@ -1,4 +1,4 @@
-![Zot Registry Logo](logo.jpeg)
+<img src="logo.jpeg" alt="Zot Registry Logo" width="200">
 
 # Zot Registry on Hetzner Cloud
 
