@@ -1,7 +1,8 @@
 #cloud-config
 
 # Zot Registry Bootstrap Script for Hetzner Cloud
-# Compatible with: Debian 12 (Bookworm), Debian 11 (Bullseye)
+# Compatible with: Debian 13 (Trixie)
+# Recommended: Deploy server in same region as Object Storage bucket for optimal performance (fsn1, nbg1, or hel1)
 # This script automatically configures a Hetzner VM to run zot as a systemd service
 
 # SSH Keys - Add your public SSH key(s) here
@@ -19,6 +20,9 @@ packages:
   - apache2-utils  # For htpasswd
   - curl
   - ca-certificates
+  - git  # For config sync from git repository
+  - gettext-base  # For envsubst (environment variable substitution)
+  - unzip  # For extracting age binary
 
 # Write configuration files
 write_files:
@@ -83,8 +87,8 @@ write_files:
       # 	}
       # }
 
-  # Zot configuration - single source of truth for zot registry config
-  - path: /etc/zot/config.json
+  # Zot configuration template - variables substituted at runtime from zot.env
+  - path: /etc/zot/config.json.template
     owner: root:root
     permissions: '0644'
     content: |
@@ -98,9 +102,9 @@ write_files:
           "gcInterval": "24h",
           "storageDriver": {
             "name": "s3",
-            "region": "eu-central-1",
-            "bucket": "BUCKET_NAME_PLACEHOLDER",
-            "regionendpoint": "fsn1.your-objectstorage.com",
+            "region": "${BUCKET_REGION}",
+            "bucket": "${BUCKET_NAME}",
+            "regionendpoint": "${BUCKET_ENDPOINT}",
             "secure": true,
             "skipverify": false
           }
@@ -143,6 +147,230 @@ write_files:
         }
       }
 
+  # Git-based configuration sync script
+  - path: /usr/local/bin/zot-sync-config.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Git-based configuration sync script for zot registry
+      # This script pulls configuration updates from git and applies them automatically
+      # Supports age encryption for sensitive files
+
+      set -euo pipefail
+
+      # Configuration
+      REPO_DIR="/opt/zot-config"
+      REPO_URL="${CONFIG_REPO_URL:-}"
+      BRANCH="${CONFIG_BRANCH:-main}"
+      AGE_KEY_FILE="${AGE_KEY_FILE:-/etc/zot/age-key.txt}"
+
+      # Logging
+      log() {
+          echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+      }
+
+      error() {
+          echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2
+      }
+
+      # Decrypt age-encrypted file
+      decrypt_age_file() {
+          local encrypted_file="$1"
+          local output_file="$2"
+
+          if [ ! -f "$AGE_KEY_FILE" ]; then
+              error "Age key file not found at $AGE_KEY_FILE"
+              return 1
+          fi
+
+          if ! command -v age >/dev/null 2>&1; then
+              error "age command not found, cannot decrypt files"
+              return 1
+          fi
+
+          log "Decrypting $encrypted_file with age"
+          if age -d -i "$AGE_KEY_FILE" "$encrypted_file" > "$output_file" 2>/dev/null; then
+              return 0
+          else
+              error "Failed to decrypt $encrypted_file"
+              return 1
+          fi
+      }
+
+      # Initialize repository if it doesn't exist
+      if [ ! -d "$REPO_DIR/.git" ]; then
+          if [ -z "$REPO_URL" ]; then
+              error "CONFIG_REPO_URL not set and repository not initialized"
+              exit 1
+          fi
+
+          log "Initializing repository from $REPO_URL"
+          git clone "$REPO_URL" "$REPO_DIR"
+          cd "$REPO_DIR"
+          git checkout "$BRANCH"
+
+          # First time setup - apply all configs
+          log "First time setup - applying all configurations"
+          INITIAL_SETUP=true
+      else
+          cd "$REPO_DIR"
+          INITIAL_SETUP=false
+      fi
+
+      # Fetch updates
+      log "Fetching updates from origin/$BRANCH"
+      git fetch origin "$BRANCH"
+
+      # Check if there are changes
+      LOCAL=$(git rev-parse HEAD)
+      REMOTE=$(git rev-parse "origin/$BRANCH")
+
+      if [ "$LOCAL" = "$REMOTE" ] && [ "$INITIAL_SETUP" = false ]; then
+          log "No changes detected, configs are up to date"
+          exit 0
+      fi
+
+      log "Changes detected, updating from $LOCAL to $REMOTE"
+
+      # Get list of changed files before pulling
+      CHANGED_FILES=$(git diff --name-only HEAD "origin/$BRANCH" || echo "")
+
+      # Pull changes
+      git pull origin "$BRANCH"
+
+      log "Changed files: $CHANGED_FILES"
+
+      # Track if any service needs restart
+      RESTART_ZOT=false
+      RELOAD_CADDY=false
+
+      # Apply configuration changes based on which files changed
+      if echo "$CHANGED_FILES" | grep -q "Caddyfile" || [ "$INITIAL_SETUP" = true ]; then
+          if [ -f "$REPO_DIR/Caddyfile" ]; then
+              log "Updating Caddyfile"
+              cp "$REPO_DIR/Caddyfile" /etc/caddy/Caddyfile
+
+              # Validate Caddyfile syntax
+              if caddy validate --config /etc/caddy/Caddyfile; then
+                  log "Caddyfile validation successful"
+                  RELOAD_CADDY=true
+              else
+                  error "Caddyfile validation failed, not applying changes"
+              fi
+          fi
+      fi
+
+      if echo "$CHANGED_FILES" | grep -q "zot-config.json" || [ "$INITIAL_SETUP" = true ]; then
+          if [ -f "$REPO_DIR/zot-config.json" ]; then
+              log "Updating zot-config.json template"
+              cp "$REPO_DIR/zot-config.json" /etc/zot/config.json.template
+              RESTART_ZOT=true
+          fi
+      fi
+
+      if echo "$CHANGED_FILES" | grep -q "zot.env" || [ "$INITIAL_SETUP" = true ]; then
+          # Check for encrypted version first
+          if [ -f "$REPO_DIR/zot.env.age" ]; then
+              log "Updating zot.env (encrypted)"
+              if decrypt_age_file "$REPO_DIR/zot.env.age" /etc/zot/zot.env; then
+                  chmod 600 /etc/zot/zot.env
+                  RESTART_ZOT=true
+              fi
+          elif [ -f "$REPO_DIR/zot.env" ]; then
+              log "Updating zot.env (plaintext)"
+              cp "$REPO_DIR/zot.env" /etc/zot/zot.env
+              chmod 600 /etc/zot/zot.env
+              RESTART_ZOT=true
+          fi
+      fi
+
+      if echo "$CHANGED_FILES" | grep -q "htpasswd" || [ "$INITIAL_SETUP" = true ]; then
+          # Check for encrypted version first
+          if [ -f "$REPO_DIR/htpasswd.age" ]; then
+              log "Updating htpasswd (encrypted)"
+              if decrypt_age_file "$REPO_DIR/htpasswd.age" /etc/zot/htpasswd; then
+                  chmod 600 /etc/zot/htpasswd
+                  RESTART_ZOT=true
+              fi
+          elif [ -f "$REPO_DIR/htpasswd" ]; then
+              log "Updating htpasswd (plaintext)"
+              cp "$REPO_DIR/htpasswd" /etc/zot/htpasswd
+              chmod 600 /etc/zot/htpasswd
+              RESTART_ZOT=true
+          fi
+      fi
+
+      # Reload/restart services as needed
+      if [ "$RELOAD_CADDY" = true ]; then
+          log "Reloading Caddy"
+          systemctl reload caddy || systemctl restart caddy
+      fi
+
+      if [ "$RESTART_ZOT" = true ]; then
+          log "Restarting zot service"
+          systemctl restart zot.service
+      fi
+
+      log "Configuration sync completed successfully"
+
+  # Systemd service for config sync
+  - path: /etc/systemd/system/zot-config-sync.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Sync zot configuration from git repository
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      EnvironmentFile=-/etc/zot/zot-config-sync.env
+      ExecStart=/usr/local/bin/zot-sync-config.sh
+      StandardOutput=journal
+      StandardError=journal
+      SyslogIdentifier=zot-config-sync
+
+      # Security hardening
+      PrivateTmp=yes
+      NoNewPrivileges=yes
+      ProtectSystem=strict
+      ReadWritePaths=/opt/zot-config /etc/caddy /etc/zot
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Systemd timer for config sync
+  - path: /etc/systemd/system/zot-config-sync.timer
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Sync zot configuration from git (every 5 minutes)
+      Requires=zot-config-sync.service
+
+      [Timer]
+      # Run 1 minute after boot
+      OnBootSec=1min
+      # Run every 5 minutes
+      OnUnitActiveSec=5min
+      # If system was off, run missed syncs on next boot
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+  # Environment file for git sync configuration (optional)
+  - path: /etc/zot/zot-config-sync.env
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Git repository URL for configuration sync
+      # Uncomment and set to enable automatic config sync
+      # CONFIG_REPO_URL=https://github.com/yourusername/zot-config.git
+      # CONFIG_BRANCH=main
+
 # Create necessary directories
 runcmd:
   # Download and install Caddy binary from official GitHub releases
@@ -172,26 +400,46 @@ runcmd:
   - chown -R caddy:caddy /var/log/caddy
   - chown -R caddy:caddy /var/lib/caddy
 
+  # Download and install age binary from official GitHub releases
+  - |
+    AGE_VERSION=$(curl -fsSL https://api.github.com/repos/FiloSottile/age/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+    curl -L "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-amd64.tar.gz" -o /tmp/age.tar.gz
+
+  # Extract and install age
+  - tar -xzf /tmp/age.tar.gz -C /tmp
+  - mv /tmp/age/age /usr/local/bin/age
+  - mv /tmp/age/age-keygen /usr/local/bin/age-keygen
+  - chmod +x /usr/local/bin/age
+  - chmod +x /usr/local/bin/age-keygen
+  - rm -rf /tmp/age.tar.gz /tmp/age
+
   # Create zot directories (config.json deployed via write_files)
   - mkdir -p /etc/zot
   - mkdir -p /var/log/zot
   - mkdir -p /var/lib/zot
+  - mkdir -p /opt/zot-config
 
   # Create default htpasswd file (user: admin, password: changeme)
   # IMPORTANT: Change this password immediately after deployment!
   - htpasswd -Bbn admin changeme > /etc/zot/htpasswd
 
-  # Create credentials file from environment or metadata
+  # Create zot environment file with all configuration
   # You should populate these via Hetzner Cloud metadata or secrets
   - |
-    cat > /etc/zot/credentials.env << 'EOF'
+    cat > /etc/zot/zot.env << 'EOF'
+    # S3 Credentials
     AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_HERE
     AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY_HERE
+
+    # Bucket Configuration
+    BUCKET_NAME=my-registry-storage
+    BUCKET_REGION=eu-central
+    BUCKET_ENDPOINT=fsn1.your-objectstorage.com
     EOF
 
   # Set proper permissions
-  - chmod 600 /etc/zot/credentials.env
-  - chmod 644 /etc/zot/config.json
+  - chmod 600 /etc/zot/zot.env
+  - chmod 644 /etc/zot/config.json.template
   - chmod 644 /etc/zot/htpasswd
 
   # Download systemd service file
@@ -210,11 +458,14 @@ runcmd:
     RestartSec=10
     TimeoutStartSec=0
 
-    # Environment variables for S3 credentials
-    EnvironmentFile=/etc/zot/credentials.env
+    # Environment variables from zot.env (credentials + bucket config)
+    EnvironmentFile=/etc/zot/zot.env
 
     # Enable podman auto-update
     Environment="PODMAN_SYSTEMD_UNIT=%n"
+
+    # Generate config.json from template with environment variable substitution
+    ExecStartPre=/bin/sh -c 'envsubst < /etc/zot/config.json.template > /etc/zot/config.json'
 
     # Pull the latest image (only if not present)
     ExecStartPre=-/usr/bin/podman pull ghcr.io/project-zot/zot:latest
@@ -285,6 +536,11 @@ runcmd:
   - systemctl enable podman-auto-update.timer
   - systemctl start podman-auto-update.timer
 
+  # Enable and start config sync timer (optional - requires CONFIG_REPO_URL in /etc/zot/zot-config-sync.env)
+  - systemctl daemon-reload
+  - systemctl enable zot-config-sync.timer
+  - systemctl start zot-config-sync.timer
+
   # Start Caddy
   - systemctl enable caddy
   - systemctl restart caddy
@@ -300,21 +556,34 @@ final_message: |
   Zot registry has been deployed successfully!
 
   IMPORTANT NEXT STEPS:
-  1. Update /etc/zot/credentials.env with your Hetzner S3 credentials
-  2. Update /etc/zot/config.json with your bucket name and endpoint
-  3. Change the default admin password in /etc/zot/htpasswd
-  4. Restart the service: systemctl restart zot.service
+  1. Update /etc/zot/zot.env with your S3 credentials and bucket configuration
+  2. Change the default admin password in /etc/zot/htpasswd
+  3. Restart the service: systemctl restart zot.service
 
   For automatic HTTPS:
   5. Edit /etc/caddy/Caddyfile and replace :80 with your-domain.com
   6. Restart Caddy: systemctl restart caddy
   7. Caddy will automatically obtain and manage SSL certificates!
 
+  OPTIONAL - Git-based Configuration Sync:
+  To enable automatic config sync from git:
+  1. Generate age key: age-keygen -o /etc/zot/age-key.txt
+  2. Set permissions: chmod 600 /etc/zot/age-key.txt
+  3. Get public key: grep "# public key:" /etc/zot/age-key.txt
+  4. Edit /etc/zot/zot-config-sync.env and set CONFIG_REPO_URL
+  5. Restart timer: systemctl restart zot-config-sync.timer
+  6. The instance will pull configs every 5 minutes from your git repo
+  7. Encrypt sensitive files with: age -r <public-key> -o file.age file
+  8. View sync logs: journalctl -u zot-config-sync -f
+
   Access your registry at: http://YOUR_SERVER_IP:80
 
   Podman auto-update is enabled and runs daily at midnight.
   Check auto-update timer: systemctl status podman-auto-update.timer
   Manual update check: podman auto-update --dry-run
+
+  Git config sync timer: systemctl status zot-config-sync.timer
+  Manual config sync: systemctl start zot-config-sync.service
 
   Check service status: systemctl status zot.service
   View logs: journalctl -u zot.service -f

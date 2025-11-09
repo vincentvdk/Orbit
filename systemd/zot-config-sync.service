@@ -1,0 +1,21 @@
+[Unit]
+Description=Sync zot configuration from git repository
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/zot/zot-config-sync.env
+ExecStart=/usr/local/bin/zot-sync-config.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zot-config-sync
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/zot-config /etc/caddy /etc/zot
+
+[Install]
+WantedBy=multi-user.target

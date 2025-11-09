@@ -3,7 +3,11 @@ cloud-init-custom.yaml
 
 # Environment files with secrets
 *.env
-credentials.env
+!*.env.example
+zot.env
+
+# Age encrypted files (these are safe to commit)
+# *.age
 
 # Backup files
 *.bak

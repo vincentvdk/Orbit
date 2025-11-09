@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync zot configuration from git (every 5 minutes)
+Requires=zot-config-sync.service
+
+[Timer]
+# Run 1 minute after boot
+OnBootSec=1min
+# Run every 5 minutes
+OnUnitActiveSec=5min
+# If system was off, run missed syncs on next boot
+Persistent=true
+
+[Install]
+WantedBy=timers.target

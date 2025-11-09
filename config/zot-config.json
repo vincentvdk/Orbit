@@ -8,9 +8,9 @@
     "gcInterval": "24h",
     "storageDriver": {
       "name": "s3",
-      "region": "eu-central-1",
-      "bucket": "${HETZNER_BUCKET_NAME}",
-      "regionendpoint": "${HETZNER_S3_REGION}.your-objectstorage.com",
+      "region": "${BUCKET_REGION}",
+      "bucket": "${BUCKET_NAME}",
+      "regionendpoint": "${BUCKET_ENDPOINT}",
       "secure": true,
       "skipverify": false
     }
@@ -52,6 +52,7 @@
     },
     "sync": {
       "enable": true,
+      "downloadDir": "/tmp",
       "credentialsFile": "/etc/zot/ghcr-credentials.json",
       "registries": [
         {
