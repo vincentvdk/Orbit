@@ -1,3 +1,5 @@
+![Zot Registry Logo](logo.jpeg)
+
 # Zot Registry on Hetzner Cloud
 
 Automated deployment of a [zot](https://github.com/project-zot/zot) OCI registry on Hetzner Cloud with object storage backend.
