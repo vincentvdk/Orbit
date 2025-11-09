@@ -5,6 +5,7 @@ cloud-init-custom.yaml
 *.env
 !*.env.example
 zot.env
+age-key.txt
 
 # Age encrypted files (these are safe to commit)
 # *.age

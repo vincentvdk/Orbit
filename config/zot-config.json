@@ -52,7 +52,7 @@
     },
     "sync": {
       "enable": true,
-      "downloadDir": "/tmp",
+      "DownloadDir": "/tmp",
       "credentialsFile": "/etc/zot/ghcr-credentials.json",
       "registries": [
         {

@@ -1,8 +1,9 @@
 # Caddyfile for Zot Registry
 # This configuration provides automatic HTTPS with Let's Encrypt
 
-# HTTP-only configuration (for initial setup or if you don't have a domain)
-# To enable HTTPS: replace ":80" with "your-domain.com" (see example below)
+# HTTPS configuration with automatic SSL/TLS certificates
+# When using setup.sh, :80 is replaced with your domain name
+# Caddy automatically obtains and renews Let's Encrypt certificates
 :80 {
 	# Reverse proxy to zot container
 	reverse_proxy localhost:5000 {
@@ -31,23 +32,22 @@
 	}
 }
 
-# Example with automatic HTTPS (uncomment and configure when you have a domain)
-# your-registry.example.com {
+# HTTP-only fallback (for testing without a domain)
+# Uncomment this and comment out the section above if you don't have a domain
+# WARNING: HTTP-only mode may cause authentication issues with the web UI
+# :80 {
 # 	reverse_proxy localhost:5000 {
 # 		header_up Host {host}
 # 		header_up X-Real-IP {remote_host}
 # 		header_up X-Forwarded-For {remote_host}
 # 		header_up X-Forwarded-Proto {scheme}
-#
 # 		request_buffers unlimited
-#
 # 		transport http {
 # 			read_timeout 15m
 # 			write_timeout 15m
 # 			dial_timeout 30s
 # 		}
 # 	}
-#
 # 	log {
 # 		output file /var/log/caddy/access.log
 # 		format console

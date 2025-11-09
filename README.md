@@ -353,7 +353,7 @@ chmod 600 /root/.ssh/config
 nano /etc/zot/zot-config-sync.env
 
 # Use SSH URL (not HTTPS):
-CONFIG_REPO_URL=git@github.com:yourusername/zot-config.git
+CONFIG_REPO_URL=ssh://git@github.com/yourusername/zot-config.git
 CONFIG_BRANCH=main
 ```
 
@@ -908,7 +908,7 @@ EOF
 
 # Use SSH URL in config
 nano /etc/zot/zot-config-sync.env
-CONFIG_REPO_URL=git@github.com:yourusername/zot-config.git
+CONFIG_REPO_URL=ssh://git@github.com/yourusername/zot-config.git
 ```
 
 ## Cost Estimation
