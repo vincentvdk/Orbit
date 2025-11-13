@@ -198,7 +198,14 @@ htpasswd -Bbn newuser newpassword > /etc/zot/htpasswd
 systemctl restart zot.service
 ```
 
-### 3. Set Up Automatic HTTPS (Recommended)
+### 3. Adding users
+It is adviced to encrypt this file using `age`. See documentation below on how to do this.
+```bash
+htpasswd -bB htpasswd newuser newpassword
+
+```
+
+### 4. Set Up Automatic HTTPS (Recommended)
 
 Caddy automatically obtains and renews SSL/TLS certificates from Let's Encrypt!
 
@@ -231,7 +238,7 @@ journalctl -u caddy -f
 curl https://your-registry.example.com/v2/
 ```
 
-### 4. Enable Git-Based Configuration Sync (Optional)
+### 5. Enable Git-Based Configuration Sync (Optional)
 
 The instance includes a pull-based configuration management system that automatically syncs configs from a git repository every 5 minutes. Sensitive files can be encrypted with age for secure storage in git.
 
